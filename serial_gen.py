@@ -1,38 +1,84 @@
 import argparse
+import os
 from time import sleep
 from random import randint
 
-# Emulates a scale on RS232 @ 9600 8N1.
-# Formats (terminated with CR):
-#   simple: "+0.345\r"     — sign + decimal kg, 3 dp
-#   spec:   "+001.100kg\r" — sign + 3-digit zero-padded integer + 3 dp + "kg"
+import serial
 
+# Emulates a scale on RS232 @ 9600 baud, 7E1 or 8N1 (--uart).
+# Formats:
+#   simple:  "+0.345\r"            — sign + decimal kg, 3 dp
+#   spec:    "+001.100kg\r"        — sign + 3-digit zero-padded integer + 3 dp + "kg"
+#   toledo:  "W *0      500      0\r\n"
+#   toledo-continuous: 17-byte Toledo continuous frame (weight in grams)
+#       STX  SWA  SWB  SWC  WEIGHT(6)  TARE(6)  CR
+#       02   '*'  '0'  ' '  '   500'   '     0' 0D
+#     SWB is '0' when stable, '8' in motion, '2'/':' for negative stable/in motion.
+
+BAUD_RATE = 9600
+UART_CONFIGS = {
+    '7E1': dict(bytesize=serial.SEVENBITS, parity=serial.PARITY_EVEN, stopbits=serial.STOPBITS_ONE),
+    '8N1': dict(bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE),
+}
 SAMPLES_PER_SECOND = 10
 REPEATS_PER_WEIGHT = 10
+MOTION_COUNT = 3  # toledo-continuous: frames flagged "in motion" after each weight change
+
+# Toledo continuous output status words
+STX = '\x02'
+SWA = '*'             # no decimal point, x1 increment
+SWB_BASE = 0x30       # gross, positive, kg -> '0'
+SWB_NEGATIVE = 0x02
+SWB_MOTION = 0x08     # -> '8'
+SWC = ' '             # units as selected in SWB
+TARE = 0
 
 parser = argparse.ArgumentParser(description='Continuous serial weight simulator.')
 parser.add_argument('output', help='File or device to write weight strings to.')
-parser.add_argument('--format', choices=['simple', 'spec'], default='simple',
-                    help='Output format (default: simple).')
+parser.add_argument('--format', choices=['simple', 'spec', 'toledo', 'toledo-continuous'],
+                    default='simple', help='Output format (default: simple).')
+parser.add_argument('--uart', choices=list(UART_CONFIGS), default='7E1',
+                    help=f'UART framing at {BAUD_RATE} baud (default: 7E1).')
 args = parser.parse_args()
 
 if args.format == 'spec':
-    def encode(grams):
+    def encode(grams, in_motion):
         return f'{grams / 1000:+08.3f}kg\r'
+elif args.format == 'toledo':
+    def encode(grams, in_motion):
+        return f'W *0      {grams}      0\r\n'
+elif args.format == 'toledo-continuous':
+    def encode(grams, in_motion):
+        swb = SWB_BASE
+        if grams < 0:
+            swb |= SWB_NEGATIVE
+        if in_motion:
+            swb |= SWB_MOTION
+        return f'{STX}{SWA}{chr(swb)}{SWC}{abs(grams):>6}{TARE:>6}\r'
 else:
-    def encode(grams):
+    def encode(grams, in_motion):
         return f'{grams / 1000:+.3f}\r'
 
-with open(args.output, 'w') as f:
+
+def open_output(path):
+    # Configure the UART when writing to a serial device; plain files are written as-is.
+    # Anything under /dev is treated as a port, so a missing device errors instead of creating a file.
+    if path.startswith('/dev/') or (os.path.exists(path) and not os.path.isfile(path)):
+        return serial.Serial(path, BAUD_RATE, **UART_CONFIGS[args.uart])
+    return open(path, 'wb')
+
+
+with open_output(args.output) as f:
     while True:
         ok = randint(1, 10) <= 8
         if ok:
             grams = randint(480, 520)
         else:
             grams = randint(-1500, 20000)
-        line = encode(grams)
-        for _ in range(REPEATS_PER_WEIGHT):
-            print(line, end='')
-            f.write(line)
+        for i in range(REPEATS_PER_WEIGHT):
+            line = encode(grams, in_motion=i < MOTION_COUNT)
+            print(repr(line))
+            # 7 data bits can only carry ASCII
+            f.write(line.encode('ascii'))
             f.flush()
             sleep(1 / SAMPLES_PER_SECOND)
