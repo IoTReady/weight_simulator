@@ -20,8 +20,8 @@ UART_CONFIGS = {
     '8N1': dict(bytesize=serial.EIGHTBITS, parity=serial.PARITY_NONE, stopbits=serial.STOPBITS_ONE),
 }
 SAMPLES_PER_SECOND = 10
-REPEATS_PER_WEIGHT = 10
-MOTION_COUNT = 3  # toledo-continuous: frames flagged "in motion" after each weight change
+STABLE_REPEATS = 16  # stable frames sent for each weight
+MOTION_COUNT = 10  # toledo-continuous: extra "in motion" frames sent before the stable ones
 
 # Toledo continuous output status words
 STX = '\x02'
@@ -59,6 +59,8 @@ else:
         return f'{grams / 1000:+.3f}\r'
 
 
+motion_frames = MOTION_COUNT if args.format == 'toledo-continuous' else 0
+
 with serial.Serial(args.port, BAUD_RATE, **UART_CONFIGS[args.uart]) as f:
     while True:
         ok = randint(1, 10) <= 8
@@ -66,8 +68,8 @@ with serial.Serial(args.port, BAUD_RATE, **UART_CONFIGS[args.uart]) as f:
             grams = randint(480, 520)
         else:
             grams = randint(-1500, 20000)
-        for i in range(REPEATS_PER_WEIGHT):
-            line = encode(grams, in_motion=i < MOTION_COUNT)
+        for i in range(motion_frames + STABLE_REPEATS):
+            line = encode(grams, in_motion=i < motion_frames)
             print(repr(line))
             # 7 data bits can only carry ASCII
             f.write(line.encode('ascii'))
