@@ -1,5 +1,4 @@
 import argparse
-import os
 from time import sleep
 from random import randint
 
@@ -34,7 +33,7 @@ SWC = ' '             # units as selected in SWB
 TARE = 0
 
 parser = argparse.ArgumentParser(description='Continuous serial weight simulator.')
-parser.add_argument('output', help='File or device to write weight strings to.')
+parser.add_argument('port', help='Serial port to send weights to, e.g. /dev/ttyUSB0.')
 parser.add_argument('--format', choices=['simple', 'spec', 'toledo', 'toledo-continuous'],
                     default='simple', help='Output format (default: simple).')
 parser.add_argument('--uart', choices=list(UART_CONFIGS), default='7E1',
@@ -60,15 +59,7 @@ else:
         return f'{grams / 1000:+.3f}\r'
 
 
-def open_output(path):
-    # Configure the UART when writing to a serial device; plain files are written as-is.
-    # Anything under /dev is treated as a port, so a missing device errors instead of creating a file.
-    if path.startswith('/dev/') or (os.path.exists(path) and not os.path.isfile(path)):
-        return serial.Serial(path, BAUD_RATE, **UART_CONFIGS[args.uart])
-    return open(path, 'wb')
-
-
-with open_output(args.output) as f:
+with serial.Serial(args.port, BAUD_RATE, **UART_CONFIGS[args.uart]) as f:
     while True:
         ok = randint(1, 10) <= 8
         if ok:
